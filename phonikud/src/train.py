@@ -152,9 +152,28 @@ class Collator:
         inputs = self.tokenizer(
             [x.text for x in items], padding=True, truncation=True, return_tensors="pt"
         )
-        targets = pad_sequence([x.target.T for x in items], batch_first=True)
-        # ^ shape: (batch_size, n_chars_padded, n_active_components)
 
+        # Create aligned targets based on token IDs
+        batch_targets = []
+        for i, item in enumerate(items):
+            # Get character-to-token mapping
+            char_mapping = self.tokenizer(item.text, return_offsets_mapping=True)
+            token_targets = torch.zeros((len(inputs["input_ids"][i]), len(item.target)))
+
+            # Map character-level targets to token-level targets
+            char_idx = 0
+            for token_idx, (start, end) in enumerate(char_mapping["offset_mapping"]):
+                if start == end == 0:  # Special tokens
+                    continue
+                # If any character in this token has a feature, the token gets it
+                for char_pos in range(start, end):
+                    if char_pos < item.target.shape[0]:
+                        token_targets[token_idx] |= item.target[char_pos]
+                char_idx += 1
+
+            batch_targets.append(token_targets)
+
+        targets = pad_sequence(batch_targets, batch_first=True)
         return inputs, targets
 
 
@@ -219,9 +238,8 @@ def main():
 
             # Get only the logits for the components we're training on
             active_indices = [COMPONENT_INDICES[comp] for comp in components]
-            active_logits = additional_logits[
-                :, 1:-1, active_indices
-            ]  # skip BOS and EOS symbols
+            active_logits = additional_logits[:, :, active_indices]
+            targets = targets[:, : active_logits.shape[1], :]
 
             loss = criterion(
                 active_logits,
